@@ -13,15 +13,17 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 def post_json(url, data, headers=None):
     body = json.dumps(data).encode("utf-8")
+
     req = urllib.request.Request(
         url,
         data=body,
         headers={
             "Content-Type": "application/json",
-            **(headers or {})
+            **(headers or {}),
         },
         method="POST",
     )
+
     with urllib.request.urlopen(req, timeout=30) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -31,24 +33,18 @@ def ask_openai(text):
         "https://api.openai.com/v1/responses",
         {
             "model": "gpt-5.6-luna",
-            "input": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are PouriaSun's Persian customer support assistant. "
-                        "Answer in Persian, clearly, briefly and professionally. "
-                        "PouriaSun works in solar energy, solar inverters, "
-                        "lithium batteries and energy storage systems. "
-                        "If you are unsure about price, stock, warranty or exact "
-                        "technical specifications, say that it should be confirmed "
-                        "with PouriaSun support. Never invent product information."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": text,
-                },
-            ],
+            "instructions": (
+                "You are PouriaSun's Persian customer support assistant. "
+                "Always answer in Persian unless the customer uses another language. "
+                "Be concise, professional and helpful. "
+                "PouriaSun works with solar energy systems, solar inverters, "
+                "hybrid and off-grid systems, lithium batteries and energy storage. "
+                "Never invent prices, stock availability, warranty terms, "
+                "or exact technical specifications. "
+                "If information is uncertain, tell the customer that it needs "
+                "confirmation from PouriaSun support."
+            ),
+            "input": text,
             "max_output_tokens": 500,
         },
         headers={
@@ -56,7 +52,14 @@ def ask_openai(text):
         },
     )
 
-    return result.get("output_text", "متأسفانه فعلاً نتونستم پاسخ مناسبی آماده کنم.")
+    # Extract text safely from Responses API
+    for item in result.get("output", []):
+        if item.get("type") == "message":
+            for content in item.get("content", []):
+                if content.get("type") == "output_text":
+                    return content.get("text", "")
+
+    return "متأسفانه فعلاً نتونستم پاسخ مناسبی آماده کنم."
 
 
 def send_telegram(chat_id, text):
@@ -71,10 +74,10 @@ def send_telegram(chat_id, text):
 
 @app.get("/")
 def home():
-    return {
+    return jsonify({
         "status": "ok",
         "service": "PouriaSun Telegram Bot"
-    }
+    })
 
 
 @app.post("/api/telegram")
@@ -93,11 +96,41 @@ def telegram_webhook():
     try:
         reply = ask_openai(text)
         send_telegram(chat_id, reply)
+
     except Exception as e:
         print("ERROR:", str(e))
-        send_telegram(
-            chat_id,
-            "در حال حاضر ارتباط با هوش مصنوعی با مشکل مواجه شده. لطفاً کمی بعد دوباره امتحان کنید."
-        )
+
+        try:
+            send_telegram(
+                chat_id,
+                "در حال حاضر ارتباط با هوش مصنوعی با مشکل مواجه شده. "
+                "لطفاً کمی بعد دوباره امتحان کنید."
+            )
+        except Exception:
+            pass
 
     return jsonify({"ok": True})
+
+
+@app.get("/setup-webhook")
+def setup_webhook():
+    webhook_url = (
+        "https://pouriasun-telegram-bot.vercel.app/api/telegram"
+    )
+
+    try:
+        result = post_json(
+            f"{TELEGRAM_API}/setWebhook",
+            {
+                "url": webhook_url,
+                "drop_pending_updates": True,
+            },
+        )
+
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+        }), 500
